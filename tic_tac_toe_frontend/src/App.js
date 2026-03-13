@@ -4,6 +4,8 @@ import "./App.css";
 const PLAYER_X = "X";
 const PLAYER_O = "O";
 
+const SCOREBOARD_STORAGE_KEY = "ttt_scoreboard_v1";
+
 const WIN_LINES = [
   [0, 1, 2], // rows
   [3, 4, 5],
@@ -38,6 +40,32 @@ function isDraw(squares) {
   return squares.every((s) => s !== null) && !calculateWinner(squares).winner;
 }
 
+/**
+ * Read the persisted scoreboard (if available).
+ * Returns a safe default if localStorage is unavailable or corrupted.
+ * @returns {{xWins:number, oWins:number, draws:number}}
+ */
+function readScoreboardFromStorage() {
+  // localStorage can be unavailable (privacy mode / SSR / restricted environments).
+  try {
+    const raw = window.localStorage.getItem(SCOREBOARD_STORAGE_KEY);
+    if (!raw) return { xWins: 0, oWins: 0, draws: 0 };
+
+    const parsed = JSON.parse(raw);
+    const xWins = Number(parsed?.xWins ?? 0);
+    const oWins = Number(parsed?.oWins ?? 0);
+    const draws = Number(parsed?.draws ?? 0);
+
+    return {
+      xWins: Number.isFinite(xWins) && xWins >= 0 ? xWins : 0,
+      oWins: Number.isFinite(oWins) && oWins >= 0 ? oWins : 0,
+      draws: Number.isFinite(draws) && draws >= 0 ? draws : 0,
+    };
+  } catch {
+    return { xWins: 0, oWins: 0, draws: 0 };
+  }
+}
+
 // PUBLIC_INTERFACE
 function App() {
   /** Keep the template's theme handling, but default to the style guide's light theme. */
@@ -45,6 +73,8 @@ function App() {
 
   const [squares, setSquares] = useState(Array(9).fill(null));
   const [nextPlayer, setNextPlayer] = useState(PLAYER_X);
+
+  const [scoreboard, setScoreboard] = useState(() => readScoreboardFromStorage());
 
   const { winner, line } = useMemo(() => calculateWinner(squares), [squares]);
   const draw = useMemo(() => isDraw(squares), [squares]);
@@ -55,6 +85,30 @@ function App() {
     document.documentElement.setAttribute("data-theme", theme);
   }, [theme]);
 
+  // Persist scoreboard across refreshes.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SCOREBOARD_STORAGE_KEY, JSON.stringify(scoreboard));
+    } catch {
+      // Ignore persistence errors; scoreboard still works in-memory.
+    }
+  }, [scoreboard]);
+
+  // When the game ends, update scoreboard once per round.
+  useEffect(() => {
+    if (!gameOver) return;
+
+    setScoreboard((prev) => {
+      if (winner === PLAYER_X) return { ...prev, xWins: prev.xWins + 1 };
+      if (winner === PLAYER_O) return { ...prev, oWins: prev.oWins + 1 };
+      if (draw) return { ...prev, draws: prev.draws + 1 };
+      return prev;
+    });
+    // We intentionally depend on "gameOver" to avoid double increments;
+    // winner/draw are derived from squares and stable for the final position.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameOver]);
+
   // PUBLIC_INTERFACE
   const toggleTheme = () => {
     setTheme((prevTheme) => (prevTheme === "light" ? "dark" : "light"));
@@ -64,6 +118,17 @@ function App() {
   const restartGame = () => {
     setSquares(Array(9).fill(null));
     setNextPlayer(PLAYER_X);
+  };
+
+  // PUBLIC_INTERFACE
+  const resetScoreboard = () => {
+    const cleared = { xWins: 0, oWins: 0, draws: 0 };
+    setScoreboard(cleared);
+    try {
+      window.localStorage.setItem(SCOREBOARD_STORAGE_KEY, JSON.stringify(cleared));
+    } catch {
+      // Ignore persistence errors.
+    }
   };
 
   /**
@@ -83,11 +148,7 @@ function App() {
     setNextPlayer((p) => (p === PLAYER_X ? PLAYER_O : PLAYER_X));
   };
 
-  const statusText = winner
-    ? `Winner: ${winner}`
-    : draw
-      ? "Draw"
-      : `Turn: ${nextPlayer}`;
+  const statusText = winner ? `Winner: ${winner}` : draw ? "Draw" : `Turn: ${nextPlayer}`;
 
   const statusSubtext = winner
     ? "Press Restart to play again."
@@ -115,12 +176,41 @@ function App() {
                 {theme === "light" ? "Dark" : "Light"}
               </button>
 
+              <button className="ttt-btn ttt-btnPrimary" onClick={restartGame} type="button">
+                Restart
+              </button>
+            </div>
+          </div>
+
+          <div className="ttt-scoreboard" aria-label="Scoreboard">
+            <div className="ttt-scoreItem" aria-label={`X wins: ${scoreboard.xWins}`}>
+              <div className="ttt-scoreLabel">
+                X <span className="ttt-scoreLabelSub">wins</span>
+              </div>
+              <div className="ttt-scoreValue">{scoreboard.xWins}</div>
+            </div>
+
+            <div className="ttt-scoreItem" aria-label={`O wins: ${scoreboard.oWins}`}>
+              <div className="ttt-scoreLabel">
+                O <span className="ttt-scoreLabelSub">wins</span>
+              </div>
+              <div className="ttt-scoreValue">{scoreboard.oWins}</div>
+            </div>
+
+            <div className="ttt-scoreItem" aria-label={`Draws: ${scoreboard.draws}`}>
+              <div className="ttt-scoreLabel">
+                Draws <span className="ttt-scoreLabelSub">total</span>
+              </div>
+              <div className="ttt-scoreValue">{scoreboard.draws}</div>
+            </div>
+
+            <div className="ttt-scoreActions">
               <button
-                className="ttt-btn ttt-btnPrimary"
-                onClick={restartGame}
+                className="ttt-btn ttt-btnSecondary ttt-btnSmall"
+                onClick={resetScoreboard}
                 type="button"
               >
-                Restart
+                Reset score
               </button>
             </div>
           </div>
