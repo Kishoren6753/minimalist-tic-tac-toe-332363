@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 
 const PLAYER_X = "X";
@@ -66,20 +66,131 @@ function readScoreboardFromStorage() {
   }
 }
 
+/**
+ * @typedef {{squares:(null|"X"|"O")[], lastMoveIndex: number|null}} HistoryEntry
+ */
+
+/**
+ * Derive whose turn it is from the board position.
+ * Invariant: X always plays first, and players alternate.
+ * @param {(null|"X"|"O")[]} squares
+ * @returns {"X"|"O"}
+ */
+function getNextPlayerFromSquares(squares) {
+  const xCount = squares.filter((s) => s === PLAYER_X).length;
+  const oCount = squares.filter((s) => s === PLAYER_O).length;
+  return xCount === oCount ? PLAYER_X : PLAYER_O;
+}
+
+/**
+ * Pure state transition for the Tic Tac Toe "time travel" flow.
+ *
+ * Contract:
+ * Inputs:
+ *  - history: non-empty list of board snapshots. history[0] must be the initial empty board.
+ *  - step: integer index into history.
+ *  - action: one of:
+ *      { type: "MOVE", index: 0..8 }
+ *      { type: "JUMP", step: 0..history.length-1 }
+ *      { type: "RESTART" }
+ * Outputs:
+ *  - { history, step } with invariants preserved:
+ *      - history non-empty
+ *      - step within bounds
+ * Errors:
+ *  - Never throws; invalid actions are treated as no-ops.
+ *
+ * Side effects: none (pure).
+ *
+ * @param {{history: HistoryEntry[], step: number}} state
+ * @param {{type:"MOVE", index:number}|{type:"JUMP", step:number}|{type:"RESTART"}} action
+ * @returns {{history: HistoryEntry[], step: number}}
+ */
+function applyTimeTravelAction(state, action) {
+  if (!state?.history?.length) {
+    return { history: [{ squares: Array(9).fill(null), lastMoveIndex: null }], step: 0 };
+  }
+
+  const safeStep = Math.min(Math.max(0, state.step), state.history.length - 1);
+  const currentEntry = state.history[safeStep];
+  const currentSquares = currentEntry.squares;
+
+  if (action.type === "RESTART") {
+    return { history: [{ squares: Array(9).fill(null), lastMoveIndex: null }], step: 0 };
+  }
+
+  if (action.type === "JUMP") {
+    const nextStep = Number(action.step);
+    if (!Number.isInteger(nextStep)) return { history: state.history, step: safeStep };
+    if (nextStep < 0 || nextStep >= state.history.length) return { history: state.history, step: safeStep };
+    return { history: state.history, step: nextStep };
+  }
+
+  if (action.type === "MOVE") {
+    const idx = Number(action.index);
+    if (!Number.isInteger(idx) || idx < 0 || idx > 8) return { history: state.history, step: safeStep };
+
+    const { winner } = calculateWinner(currentSquares);
+    const draw = isDraw(currentSquares);
+    const gameOver = Boolean(winner) || draw;
+    if (gameOver) return { history: state.history, step: safeStep };
+
+    if (currentSquares[idx] !== null) return { history: state.history, step: safeStep };
+
+    const nextPlayer = getNextPlayerFromSquares(currentSquares);
+
+    // If user time-traveled to the past and makes a move, we discard the "future".
+    const truncated = state.history.slice(0, safeStep + 1);
+    const nextSquares = currentSquares.slice();
+    nextSquares[idx] = nextPlayer;
+
+    const nextHistory = truncated.concat([{ squares: nextSquares, lastMoveIndex: idx }]);
+    return { history: nextHistory, step: nextHistory.length - 1 };
+  }
+
+  return { history: state.history, step: safeStep };
+}
+
 // PUBLIC_INTERFACE
 function App() {
   /** Keep the template's theme handling, but default to the style guide's light theme. */
   const [theme, setTheme] = useState("light");
 
-  const [squares, setSquares] = useState(Array(9).fill(null));
-  const [nextPlayer, setNextPlayer] = useState(PLAYER_X);
+  /** Time-travel state (single canonical flow state). */
+  const [timeTravel, setTimeTravel] = useState(() => ({
+    history: [{ squares: Array(9).fill(null), lastMoveIndex: null }],
+    step: 0,
+  }));
+
+  const squares = timeTravel.history[timeTravel.step].squares;
 
   const [scoreboard, setScoreboard] = useState(() => readScoreboardFromStorage());
 
   const { winner, line } = useMemo(() => calculateWinner(squares), [squares]);
   const draw = useMemo(() => isDraw(squares), [squares]);
 
+  const nextPlayer = useMemo(() => getNextPlayerFromSquares(squares), [squares]);
   const gameOver = Boolean(winner) || draw;
+
+  const moveCount = timeTravel.step;
+  const canUndo = timeTravel.step > 0;
+
+  // ---- Observability (debuggability) ----
+  const prevStepRef = useRef(timeTravel.step);
+  useEffect(() => {
+    // Minimal, consistent tracing for the time travel flow.
+    // This is intentionally console-based (no external logging deps).
+    const prevStep = prevStepRef.current;
+    if (prevStep !== timeTravel.step) {
+      // eslint-disable-next-line no-console
+      console.debug("[TicTacToeTimeTravelFlow] step_changed", {
+        from: prevStep,
+        to: timeTravel.step,
+        historyLength: timeTravel.history.length,
+      });
+      prevStepRef.current = timeTravel.step;
+    }
+  }, [timeTravel.step, timeTravel.history.length]);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -94,9 +205,17 @@ function App() {
     }
   }, [scoreboard]);
 
-  // When the game ends, update scoreboard once per round.
+  // When the game ends, update scoreboard once per round (per unique final board state).
+  const creditedFinalBoardKeyRef = useRef(null);
   useEffect(() => {
-    if (!gameOver) return;
+    if (!gameOver) {
+      creditedFinalBoardKeyRef.current = null;
+      return;
+    }
+
+    const finalKey = squares.map((s) => s ?? "-").join("");
+    if (creditedFinalBoardKeyRef.current === finalKey) return;
+    creditedFinalBoardKeyRef.current = finalKey;
 
     setScoreboard((prev) => {
       if (winner === PLAYER_X) return { ...prev, xWins: prev.xWins + 1 };
@@ -104,10 +223,7 @@ function App() {
       if (draw) return { ...prev, draws: prev.draws + 1 };
       return prev;
     });
-    // We intentionally depend on "gameOver" to avoid double increments;
-    // winner/draw are derived from squares and stable for the final position.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gameOver]);
+  }, [gameOver, squares, winner, draw]);
 
   // PUBLIC_INTERFACE
   const toggleTheme = () => {
@@ -116,8 +232,7 @@ function App() {
 
   // PUBLIC_INTERFACE
   const restartGame = () => {
-    setSquares(Array(9).fill(null));
-    setNextPlayer(PLAYER_X);
+    setTimeTravel((prev) => applyTimeTravelAction(prev, { type: "RESTART" }));
   };
 
   // PUBLIC_INTERFACE
@@ -136,16 +251,18 @@ function App() {
    * @param {number} index
    */
   const handleSquareClick = (index) => {
-    if (gameOver) return;
-    if (squares[index] !== null) return;
+    setTimeTravel((prev) => applyTimeTravelAction(prev, { type: "MOVE", index }));
+  };
 
-    setSquares((prev) => {
-      const next = prev.slice();
-      next[index] = nextPlayer;
-      return next;
-    });
+  // PUBLIC_INTERFACE
+  const jumpToMove = (step) => {
+    setTimeTravel((prev) => applyTimeTravelAction(prev, { type: "JUMP", step }));
+  };
 
-    setNextPlayer((p) => (p === PLAYER_X ? PLAYER_O : PLAYER_X));
+  // PUBLIC_INTERFACE
+  const undoMove = () => {
+    if (!canUndo) return;
+    jumpToMove(timeTravel.step - 1);
   };
 
   const statusText = winner ? `Winner: ${winner}` : draw ? "Draw" : `Turn: ${nextPlayer}`;
@@ -154,7 +271,9 @@ function App() {
     ? "Press Restart to play again."
     : draw
       ? "No more moves left—press Restart to try again."
-      : "Tap a square to place your mark.";
+      : canUndo
+        ? "Tap a square to place your mark, or undo to revisit a prior move."
+        : "Tap a square to place your mark.";
 
   return (
     <div className="App">
@@ -174,6 +293,10 @@ function App() {
                 type="button"
               >
                 {theme === "light" ? "Dark" : "Light"}
+              </button>
+
+              <button className="ttt-btn ttt-btnSecondary" onClick={undoMove} type="button" disabled={!canUndo}>
+                Undo
               </button>
 
               <button className="ttt-btn ttt-btnPrimary" onClick={restartGame} type="button">
@@ -205,11 +328,7 @@ function App() {
             </div>
 
             <div className="ttt-scoreActions">
-              <button
-                className="ttt-btn ttt-btnSecondary ttt-btnSmall"
-                onClick={resetScoreboard}
-                type="button"
-              >
+              <button className="ttt-btn ttt-btnSecondary ttt-btnSmall" onClick={resetScoreboard} type="button">
                 Reset score
               </button>
             </div>
@@ -218,6 +337,43 @@ function App() {
           <div className="ttt-status" role="status" aria-live="polite">
             <div className="ttt-statusMain">{statusText}</div>
             <div className="ttt-statusSub">{statusSubtext}</div>
+          </div>
+
+          <div className="ttt-history" aria-label="Move history">
+            <div className="ttt-historyHeader">
+              <div className="ttt-historyTitle">Moves</div>
+              <div className="ttt-historyMeta">
+                {moveCount === 0 ? "No moves yet." : `${moveCount} move${moveCount === 1 ? "" : "s"} played.`}
+              </div>
+            </div>
+
+            <ol className="ttt-historyList">
+              {timeTravel.history.map((entry, step) => {
+                const isCurrent = step === timeTravel.step;
+                const label =
+                  step === 0
+                    ? "Go to start"
+                    : entry.lastMoveIndex === null
+                      ? `Go to move #${step}`
+                      : `Go to move #${step} (square ${entry.lastMoveIndex + 1})`;
+
+                return (
+                  <li key={step} className="ttt-historyItem">
+                    <button
+                      type="button"
+                      className={["ttt-btn", "ttt-btnSecondary", "ttt-historyBtn", isCurrent ? "ttt-historyBtnActive" : ""].join(
+                        " "
+                      )}
+                      onClick={() => jumpToMove(step)}
+                      aria-current={isCurrent ? "step" : undefined}
+                    >
+                      {isCurrent ? "Current: " : ""}
+                      {label}
+                    </button>
+                  </li>
+                );
+              })}
+            </ol>
           </div>
         </header>
 

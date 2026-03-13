@@ -291,6 +291,62 @@
   color: var(--text-primary);
 }
 
+/* Move history */
+.ttt-history {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: linear-gradient(180deg, rgba(100, 116, 139, 0.06), transparent);
+}
+
+.ttt-historyHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.ttt-historyTitle {
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.ttt-historyMeta {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.ttt-historyList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.ttt-historyItem {
+  margin: 0;
+  padding: 0;
+}
+
+.ttt-historyBtn {
+  width: 100%;
+  text-align: left;
+  justify-content: flex-start;
+}
+
+.ttt-historyBtnActive {
+  border-color: rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.10);
+}
+
 /* Mobile tweaks */
 @media (max-width: 480px) {
   .ttt-shell {
@@ -304,6 +360,7 @@
 
   .ttt-headerActions {
     justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .ttt-scoreboard {
@@ -312,5 +369,14 @@
 
   .ttt-scoreActions {
     justify-content: flex-start;
+  }
+
+  .ttt-historyHeader {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .ttt-historyMeta {
+    white-space: normal;
   }
 }
